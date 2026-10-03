@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f4f5f0">
+    <title>Taskboard</title>
+    <link rel="stylesheet" th:href="@{/css/app.css}">
+</head>
+<body>
+<main class="shell">
+    <header class="topbar">
+        <a class="brand" th:href="@{/}" aria-label="Taskboard home">
+            <span class="brand-mark" aria-hidden="true">t.</span>
+            <span>fieldnotes<span class="brand-dot">/</span>tasks</span>
+        </a>
+        <span class="topbar-label">PERSONAL WORKSPACE</span>
+    </header>
+
+    <section class="intro" aria-labelledby="page-title">
+        <div>
+            <p class="eyebrow">YOUR DAY, IN CLEAR VIEW</p>
+            <h1 id="page-title">Make room for<br><span>what matters.</span></h1>
+        </div>
+        <p class="intro-note">A quieter place to keep track<br>of the work in front of you.</p>
+    </section>
+
+    <section class="summary" aria-label="Task summary">
+        <div class="summary-item summary-total">
+            <span class="summary-label">ALL TASKS</span>
+            <strong th:text="${tasks.size()}">0</strong>
+        </div>
+        <div class="summary-item">
+            <span class="summary-label"><i class="status-dot dot-todo"></i> TO DO</span>
+            <strong th:text="${todoCount}">0</strong>
+        </div>
+        <div class="summary-item">
+            <span class="summary-label"><i class="status-dot dot-progress"></i> IN PROGRESS</span>
+            <strong th:text="${inProgressCount}">0</strong>
+        </div>
+        <div class="summary-item">
+            <span class="summary-label"><i class="status-dot dot-done"></i> DONE</span>
+            <strong th:text="${doneCount}">0</strong>
+        </div>
+    </section>
+
+    <div class="workspace">
+        <section class="task-column" aria-labelledby="tasks-heading">
+            <div class="section-heading">
+                <div>
+                    <p class="eyebrow">THE LIST</p>
+                    <h2 id="tasks-heading">Tasks <span class="count" th:text="${tasks.size()}">0</span></h2>
+                </div>
+            </div>
+
+            <p class="notice" role="status" th:if="${notice}" th:text="${notice}"></p>
+
+            <div class="empty-state" th:if="${#lists.isEmpty(tasks)}">
+                <span class="empty-mark" aria-hidden="true">+</span>
+                <h3>A clear page.</h3>
+                <p>Add a task when something needs your attention.</p>
+            </div>
+
+            <ul class="task-list" th:if="${!#lists.isEmpty(tasks)}">
+                <li class="task-item" th:each="task : ${tasks}">
+                    <div class="task-copy">
+                        <h3 th:text="${task.title}">Task title</h3>
+                        <p class="task-description" th:if="${!#strings.isEmpty(task.description)}"
+                           th:text="${task.description}">Task description</p>
+                        <time class="task-date" th:datetime="${task.createdAt}"
+                              th:text="${#temporals.format(task.createdAt, 'MMM d, yyyy')}">Oct 1, 2026</time>
+                    </div>
+                    <div class="task-actions">
+                        <form class="status-form" th:action="@{/tasks/{id}/status(id=${task.id})}" method="post">
+                            <label class="visually-hidden" th:for="|status-${task.id}|">Status for [[${task.title}]]</label>
+                            <select th:id="|status-${task.id}|" name="status" th:class="|status-select status-${#strings.toLowerCase(task.status)}|"
+                                    aria-label="Task status" onchange="this.form.submit()">
+                                <option th:each="status : ${statuses}" th:value="${status}"
+                                        th:text="${status.label}" th:selected="${status == task.status}">To do</option>
+                            </select>
+                        </form>
+                        <form th:action="@{/tasks/{id}/delete(id=${task.id})}" method="post">
+                            <button class="delete-button" type="submit" th:aria-label="|Delete ${task.title}|" title="Delete task">&times;</button>
+                        </form>
+                    </div>
+                </li>
+            </ul>
+        </section>
+
+        <aside class="create-panel" aria-labelledby="create-heading">
+            <p class="eyebrow">START SMALL</p>
+            <h2 id="create-heading">Add a task<span class="heading-period">.</span></h2>
+            <p class="form-intro">Get it out of your head and onto the list.</p>
+            <form class="task-form" th:action="@{/tasks}" th:object="${taskForm}" method="post">
+                <label for="title">Task name</label>
+                <input id="title" type="text" th:field="*{title}" placeholder="e.g. Review project proposal"
+                       maxlength="120" required autofocus>
+                <p class="field-error" th:if="${#fields.hasErrors('title')}" th:errors="*{title}">Title error</p>
+
+                <label for="description">A few details <span class="optional">OPTIONAL</span></label>
+                <textarea id="description" th:field="*{description}" rows="4" maxlength="1000"
+                          placeholder="Add a note or next step..."></textarea>
+                <p class="field-error" th:if="${#fields.hasErrors('description')}" th:errors="*{description}">Description error</p>
+
+                <button class="add-button" type="submit"><span aria-hidden="true">+</span> Add to list</button>
+            </form>
+            <p class="privacy-note"><span aria-hidden="true">&#9679;</span> Your tasks stay on this instance.</p>
+        </aside>
+    </div>
+
+    <footer class="footer">
+        <span>FIELDNOTES / TASKS</span>
+        <span>ONE THING AT A TIME.</span>
+    </footer>
+</main>
+</body>
+</html>
