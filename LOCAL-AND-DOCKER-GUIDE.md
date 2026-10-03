@@ -240,6 +240,24 @@ Remove-Item Env:APP_PORT
 
 ## 4. Common checks
 
-If Maven or Java is reported as an unknown command, open a new PowerShell window and retry the version checks in section 1. If Docker commands fail, start Docker Desktop and wait for its engine to finish starting. If the page does not load, inspect the app logs with `docker compose logs --follow app` and confirm the published port with `docker compose ps`.
+If Docker Desktop reports that virtualization was not detected, open PowerShell as Administrator and enable the Windows components Docker's WSL 2 engine needs:
+
+```powershell
+dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart
+dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
+bcdedit /set hypervisorlaunchtype auto
+Restart-Computer
+```
+
+After Windows restarts, open PowerShell and update WSL:
+
+```powershell
+wsl --update
+wsl --status
+```
+
+Start Docker Desktop, open **Settings > General**, enable **Use the WSL 2 based engine**, and select **Apply & restart**. If the administrator commands are blocked by your organization, ask IT to enable WSL and Virtual Machine Platform. Do not change BIOS virtualization if Windows already reports that firmware virtualization is enabled.
+
+If Maven or Java is reported as an unknown command, run the setup commands in section 1 and reopen PowerShell. If the page does not load after Docker starts, inspect the app logs with `docker compose logs --follow app` and confirm the published port with `docker compose ps`.
 
 Do not run `docker compose down --volumes` unless you intend to permanently delete the tasks saved in the Docker volume.
