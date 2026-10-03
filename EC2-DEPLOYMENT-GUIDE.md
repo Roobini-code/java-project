@@ -76,10 +76,9 @@ docker compose version
 aws --version
 ```
 
-Change to the project folder and run the automated test:
+From the `java-project` directory, run the automated test:
 
 ```powershell
-Set-Location 'C:\Users\D E L L\Downloads\github-code\java-project'
 mvn clean test
 ```
 
@@ -138,7 +137,7 @@ $Region = 'us-east-1'
 $KeyName = 'taskboard-key'
 $KeyPath = Join-Path $HOME "$KeyName.pem"
 $GroupName = 'taskboard-web-sg'
-$ProjectPath = 'C:\Users\D E L L\Downloads\github-code\java-project'
+$ProjectPath = (Get-Location).Path
 $ArchivePath = Join-Path $env:TEMP 'taskboard-deploy.tar.gz'
 ```
 

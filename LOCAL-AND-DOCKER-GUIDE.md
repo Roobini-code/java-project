@@ -131,11 +131,7 @@ docker compose version
 
 ## 2. Run and test locally with Java
 
-Change to the project directory:
-
-```powershell
-Set-Location 'C:\Users\D E L L\Downloads\github-code\java-project'
-```
+Run the following commands from the `java-project` directory.
 
 Run the automated web application test:
 
@@ -177,11 +173,7 @@ java -jar .\target\taskboard.jar
 
 ## 3. Build and deploy with Docker Compose
 
-Change to the project directory if needed:
-
-```powershell
-Set-Location 'C:\Users\D E L L\Downloads\github-code\java-project'
-```
+Run these commands from the same `java-project` directory.
 
 Build the image and start the app in the background:
 
