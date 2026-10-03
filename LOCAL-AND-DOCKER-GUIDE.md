@@ -2,6 +2,22 @@
 
 Taskboard is a Java 21 / Spring Boot web application. It stores tasks in an H2 database file. When run directly, the database is in `data/taskboard.mv.db`; with Docker Compose, it is stored in a named Docker volume and survives container restarts.
 
+## Build-to-endpoint overview
+
+```mermaid
+flowchart LR
+	User[Developer] --> Source[Write Java code]
+	Source --> Test[mvn clean test]
+	Test --> Jar[mvn package: taskboard.jar]
+	Jar --> Run[java -jar or mvn spring-boot:run]
+	Run --> LocalEndpoint[Browser: localhost:8080]
+	Source --> Compose[docker compose up --build]
+	Compose --> Image[Build Docker image]
+	Image --> Container[Run Spring Boot container]
+	Container --> Data[(Persistent H2 volume)]
+	Container --> DockerEndpoint[Browser: localhost:8080]
+```
+
 ## Architecture and request flow
 
 ```mermaid
@@ -54,10 +70,41 @@ Install the Java 21 JDK:
 winget install --exact --id EclipseAdoptium.Temurin.21.JDK
 ```
 
-Install Apache Maven for running the project directly on Windows:
+Try refreshing Winget and checking whether Apache Maven is available in your source:
 
 ```powershell
-winget install --exact --id Apache.Maven
+winget source update
+winget search --id Apache.Maven --exact --source winget
+```
+
+If the search lists Apache Maven, install it with:
+
+```powershell
+winget install --exact --id Apache.Maven --source winget
+```
+
+If Winget still reports no package, install Maven from Apache's official binary archive instead:
+
+```powershell
+$MavenVersion = '3.10.0'
+$ToolsDirectory = Join-Path $HOME 'tools'
+$MavenZip = Join-Path $env:TEMP "apache-maven-$MavenVersion-bin.zip"
+New-Item -ItemType Directory -Force -Path $ToolsDirectory | Out-Null
+Invoke-WebRequest -Uri "https://dlcdn.apache.org/maven/maven-3/$MavenVersion/binaries/apache-maven-$MavenVersion-bin.zip" -OutFile $MavenZip
+Expand-Archive -Path $MavenZip -DestinationPath $ToolsDirectory -Force
+$env:MAVEN_HOME = Join-Path $ToolsDirectory "apache-maven-$MavenVersion"
+$MavenBin = Join-Path $env:MAVEN_HOME 'bin'
+$env:Path = "$MavenBin;$env:Path"
+mvn -version
+```
+
+To make this Maven installation available in future PowerShell windows, add its `bin` directory to your user `PATH`:
+
+```powershell
+$UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+if ($UserPath -notlike "*$MavenBin*") {
+	[Environment]::SetEnvironmentVariable('Path', "$UserPath;$MavenBin", 'User')
+}
 ```
 
 Install Docker Desktop for the container workflow:

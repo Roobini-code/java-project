@@ -6,6 +6,23 @@ Java and Maven are needed on your Windows machine to test the project locally. E
 
 > **Security and cost:** Taskboard has no login or user accounts. The steps below allow access only from your current public IP; do not expose it publicly with real or sensitive tasks. HTTP is not encrypted. Add authentication and HTTPS before making this a public service. EC2, EBS, and public IPv4 usage may incur AWS charges. Review pricing and terminate resources when finished.
 
+## Build-to-endpoint overview
+
+```mermaid
+flowchart LR
+    Developer[Developer PC] --> Test[mvn clean test]
+    Test --> Archive[Create source archive]
+    Archive --> Copy[SCP archive over SSH]
+    Copy --> EC2[Amazon Linux EC2]
+    EC2 --> Compose[docker compose up --build]
+    Compose --> Image[Build Docker image]
+    Image --> App[Spring Boot container on port 8080]
+    App --> Volume[(Persistent H2 Docker volume)]
+    App --> Map[Publish EC2 port 80 to container port 8080]
+    Map --> Firewall[Security group allows your IP]
+    Firewall --> Endpoint[Browser: http://EC2-public-IP]
+```
+
 ## Architecture and request flow
 
 ```mermaid
