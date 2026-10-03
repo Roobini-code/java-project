@@ -58,42 +58,32 @@ flowchart TD
 
 ## 1. Install the tools on Windows
 
-Open **PowerShell**. Check that Windows Package Manager is available:
+Run these commands in PowerShell:
 
 ```powershell
 winget --version
 ```
 
-Install Java 21 only if it is not already installed:
+Install Java 21 and configure the current PowerShell window:
 
 ```powershell
-if (-not (Test-Path 'C:\Program Files\Eclipse Adoptium\jdk-21*')) {
-	winget install --exact --id EclipseAdoptium.Temurin.21.JDK
+if (-not (Get-ChildItem 'C:\Program Files\Eclipse Adoptium' -Directory -Filter 'jdk-21*' -ErrorAction SilentlyContinue)) {
+    winget install --exact --id EclipseAdoptium.Temurin.21.JDK
 }
-```
-
-After the install, open a new PowerShell window and set `JAVA_HOME` to the installed JDK. This block finds the standard Eclipse Temurin installation, saves `JAVA_HOME` and the JDK `bin` directory for future windows, then configures the current window too:
-
-```powershell
-$Jdk = Get-ChildItem 'C:\Program Files\Eclipse Adoptium' -Directory -ErrorAction SilentlyContinue |
-	Where-Object { $_.Name -like 'jdk-21*' } |
-	Sort-Object LastWriteTime -Descending |
-	Select-Object -First 1
-if (-not $Jdk) { throw 'Java 21 was not found under C:\Program Files\Eclipse Adoptium. Check the JDK installation path.' }
+$Jdk = Get-ChildItem 'C:\Program Files\Eclipse Adoptium' -Directory -Filter 'jdk-21*' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 $JdkHome = $Jdk.FullName
 $JdkBin = Join-Path $JdkHome 'bin'
-[Environment]::SetEnvironmentVariable('JAVA_HOME', $JdkHome, 'User')
-$UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-if ($UserPath -notlike "*$JdkBin*") {
-	$UserPath = if ([string]::IsNullOrWhiteSpace($UserPath)) { $JdkBin } else { "$UserPath;$JdkBin" }
-	[Environment]::SetEnvironmentVariable('Path', $UserPath, 'User')
-}
 $env:JAVA_HOME = $JdkHome
 $env:Path = "$JdkBin;$env:Path"
+[Environment]::SetEnvironmentVariable('JAVA_HOME', $JdkHome, 'User')
+$UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+$PathEntries = @($UserPath -split ';' | Where-Object { $_ })
+if ($PathEntries -notcontains $JdkBin) { $PathEntries += $JdkBin }
+[Environment]::SetEnvironmentVariable('Path', ($PathEntries -join ';'), 'User')
 java -version
 ```
 
-Install Maven from Apache's official binary archive if it is not already installed, then persist its location in your user environment:
+Install Maven and configure the current PowerShell window:
 
 ```powershell
 $MavenVersion = '3.10.0'
@@ -101,42 +91,36 @@ $ToolsDirectory = Join-Path $HOME 'tools'
 $MavenHome = Join-Path $ToolsDirectory "apache-maven-$MavenVersion"
 $MavenCommand = Join-Path $MavenHome 'bin\mvn.cmd'
 if (-not (Test-Path $MavenCommand)) {
-	$MavenZip = Join-Path $env:TEMP "apache-maven-$MavenVersion-bin.zip"
-	New-Item -ItemType Directory -Force -Path $ToolsDirectory | Out-Null
-	Invoke-WebRequest -Uri "https://dlcdn.apache.org/maven/maven-3/$MavenVersion/binaries/apache-maven-$MavenVersion-bin.zip" -OutFile $MavenZip
-	Expand-Archive -Path $MavenZip -DestinationPath $ToolsDirectory -Force
+    $MavenZip = Join-Path $env:TEMP "apache-maven-$MavenVersion-bin.zip"
+    New-Item -ItemType Directory -Force -Path $ToolsDirectory | Out-Null
+    Invoke-WebRequest -Uri "https://dlcdn.apache.org/maven/maven-3/$MavenVersion/binaries/apache-maven-$MavenVersion-bin.zip" -OutFile $MavenZip
+    Expand-Archive -Path $MavenZip -DestinationPath $ToolsDirectory -Force
 }
 $env:MAVEN_HOME = $MavenHome
 $MavenBin = Join-Path $MavenHome 'bin'
-$env:Path = "$MavenBin;$env:Path"
+$env:Path = "$MavenBin;$env:JAVA_HOME\bin;$env:Path"
 [Environment]::SetEnvironmentVariable('MAVEN_HOME', $MavenHome, 'User')
 $UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-if ($UserPath -notlike "*$MavenBin*") {
-	$UserPath = if ([string]::IsNullOrWhiteSpace($UserPath)) { $MavenBin } else { "$UserPath;$MavenBin" }
-	[Environment]::SetEnvironmentVariable('Path', $UserPath, 'User')
-}
+$PathEntries = @($UserPath -split ';' | Where-Object { $_ })
+if ($PathEntries -notcontains $MavenBin) { $PathEntries += $MavenBin }
+[Environment]::SetEnvironmentVariable('Path', ($PathEntries -join ';'), 'User')
 mvn -version
 ```
 
-Install Docker Desktop only if the Docker command is not already available:
+Install and start Docker Desktop:
 
 ```powershell
-if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-	winget install --exact --id Docker.DockerDesktop
-}
+winget install --exact --id Docker.DockerDesktop
+Start-Process "$env:ProgramFiles\Docker\Docker\Docker Desktop.exe"
 ```
 
-If Windows asks for permission, approve the installation. Restart PowerShell after the installs so the updated `PATH` is loaded. Start Docker Desktop from the Start menu and wait until it reports that Docker is running. If prompted, enable the WSL 2 backend and restart Windows.
-
-AWS CLI is needed only for EC2 deployment. Install it if you plan to follow [EC2-DEPLOYMENT-GUIDE.md](EC2-DEPLOYMENT-GUIDE.md):
+Install AWS CLI only for EC2 deployment:
 
 ```powershell
-if (-not (Get-Command aws -ErrorAction SilentlyContinue)) {
-	winget install --exact --id Amazon.AWSCLI
-}
+winget install --exact --id Amazon.AWSCLI
 ```
 
-Confirm the installations in a new PowerShell window:
+Verify the prerequisites:
 
 ```powershell
 java -version
@@ -144,8 +128,6 @@ mvn -version
 docker --version
 docker compose version
 ```
-
-For EC2 deployment, also run `aws --version`. Java and Maven are required for native test/build commands. Docker Desktop can build and run the app through Compose without Java or Maven because the Dockerfile supplies them in its build image.
 
 ## 2. Run and test locally with Java
 
