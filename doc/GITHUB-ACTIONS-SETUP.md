@@ -25,39 +25,37 @@ the H2 database survives container replacement.
 **Every push to `main` deploys.** Protect `main` and require reviewed pull
 requests before enabling this pipeline for production.
 
-### Pipeline flow
+### Architecture and pipeline flow
 
-```mermaid
-flowchart TD
-    PR["Pull request targeting main"] --> CALL["App workflow calls reusable workflow"]
-    PUSH["Push or merge to main"] --> CALL
+![AWS and GitHub Actions deployment architecture](AWS.png)
 
-    CALL --> CHECKOUT["Checkout app with GitHub GITHUB_TOKEN"]
-    CHECKOUT --> TEST["Set up Java 21 and run mvn clean verify"]
-    TEST --> BUILD["Build Docker image without publishing"]
-    BUILD --> CONDITION{"Push to main and verification passed?"}
+The image gives an overview. The numbered flow below explains the actual
+services in simple terms:
 
-    CONDITION -->|"No: pull request"| PRDONE["CI checks finish; no secrets, push, or deployment"]
-    CONDITION -->|"Yes"| VERSION["Create unique image version from Maven version and run number"]
-    VERSION --> LOGIN["Log in to Docker Hub using Actions secrets"]
-    LOGIN --> PUBLISH["Build and push versioned image and latest"]
-    PUBLISH --> OIDC["GitHub exchanges OIDC token for short-lived AWS credentials"]
-    OIDC --> SSM["Send deployment command through AWS Systems Manager"]
-    SSM --> PULL["SSM-connected EC2 pulls the versioned image"]
-    PULL --> RUN["Replace taskboard container; reuse taskboard-data volume"]
-    RUN --> HEALTH{"HTTP health check succeeds?"}
-    HEALTH -->|"Yes"| TAG["Create and push matching Git tag"]
-    HEALTH -->|"No"| ROLLBACK["Attempt to restore prior container; workflow fails"]
-    TAG --> DONE["Deployment complete"]
+1. **Pull request:** GitHub Actions checks out the app, runs `mvn clean verify`,
+   and builds the Docker image. It does not publish or deploy.
+2. **Push or merge to `main`:** GitHub Actions verifies the app and pushes a
+   versioned Docker image (and `latest`) to Docker Hub.
+3. **Get an identity token:** the runner asks GitHub's OIDC service for a
+   signed token. The workflow needs `id-token: write` permission for this.
+4. **Get temporary AWS access:** the runner sends that token to AWS STS and
+   asks to use `TaskboardGitHubActionsDeployRole`. STS is an AWS service that
+   already exists; you do not create it. STS checks the IAM OIDC provider and
+   the role's trust policy, then returns temporary credentials if permitted.
+5. **Request deployment:** the runner uses those credentials to ask AWS
+   Systems Manager (SSM) to run the deployment command on the configured EC2
+   instance. `TaskboardGitHubDeployPolicy` allows the runner to request and
+   check this command.
+6. **Deliver the command:** the SSM agent on EC2 checks in with SSM over
+   outbound HTTPS. SSM relays the command to the agent; GitHub Actions does
+   not SSH into or connect directly to EC2.
+7. **Run and verify the app:** Docker on EC2 pulls the image from Docker Hub,
+   replaces the Taskboard container while keeping the `taskboard-data`
+   volume, and checks the app locally with `curl`. On success, the workflow
+   creates a Git tag; on failure, it reports failure and attempts rollback.
 
-    SECRETS["Docker Hub token"] -.-> LOGIN
-    ROLE["Restricted AWS IAM role for this repo's main branch"] -.-> OIDC
-    INSTANCE["EC2 instance role: AmazonSSMManagedInstanceCore"] -.-> SSM
-```
-
-Pull-request verification does not need deployment credentials. For a merge
-deployment, image publishing happens before the SSM deployment; the Git tag is
-created only after EC2 passes its health check. No inbound SSH from GitHub
+For a push to `main`, image publishing happens before deployment; the Git tag
+is created only after EC2 passes its health check. No inbound SSH from GitHub
 Actions is needed.
 
 ## Do I need a GitHub PAT for Actions to clone the app?
