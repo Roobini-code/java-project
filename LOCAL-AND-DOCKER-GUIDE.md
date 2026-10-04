@@ -2,6 +2,22 @@
 
 Taskboard is a Java 21 / Spring Boot web application. It stores tasks in an H2 database file. When run directly, the database is in `data/taskboard.mv.db`; with Docker Compose, it is stored in a named Docker volume and survives container restarts.
 
+## Build-to-endpoint overview
+
+```mermaid
+flowchart LR
+	User[Developer] --> Source[Write Java code]
+	Source --> Test[mvn clean test]
+	Test --> Jar[mvn package: taskboard.jar]
+	Jar --> Run[java -jar or mvn spring-boot:run]
+	Run --> LocalEndpoint[Browser: localhost:8080]
+	Source --> Compose[docker compose up --build]
+	Compose --> Image[Build Docker image]
+	Image --> Container[Run Spring Boot container]
+	Container --> Data[(Persistent H2 volume)]
+	Container --> DockerEndpoint[Browser: localhost:8080]
+```
+
 ## Architecture and request flow
 
 ```mermaid
@@ -42,33 +58,69 @@ flowchart TD
 
 ## 1. Install the tools on Windows
 
-Open **PowerShell**. Check that Windows Package Manager is available:
+Run these commands in PowerShell:
 
 ```powershell
 winget --version
 ```
 
-Install the Java 21 JDK:
+Install Java 21 and configure the current PowerShell window:
 
 ```powershell
-winget install --exact --id EclipseAdoptium.Temurin.21.JDK
+if (-not (Get-ChildItem 'C:\Program Files\Eclipse Adoptium' -Directory -Filter 'jdk-21*' -ErrorAction SilentlyContinue)) {
+    winget install --exact --id EclipseAdoptium.Temurin.21.JDK
+}
+$Jdk = Get-ChildItem 'C:\Program Files\Eclipse Adoptium' -Directory -Filter 'jdk-21*' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+$JdkHome = $Jdk.FullName
+$JdkBin = Join-Path $JdkHome 'bin'
+$env:JAVA_HOME = $JdkHome
+$env:Path = "$JdkBin;$env:Path"
+[Environment]::SetEnvironmentVariable('JAVA_HOME', $JdkHome, 'User')
+$UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+$PathEntries = @($UserPath -split ';' | Where-Object { $_ })
+if ($PathEntries -notcontains $JdkBin) { $PathEntries += $JdkBin }
+[Environment]::SetEnvironmentVariable('Path', ($PathEntries -join ';'), 'User')
+java -version
 ```
 
-Install Apache Maven for running the project directly on Windows:
+Install Maven and configure the current PowerShell window:
 
 ```powershell
-winget install --exact --id Apache.Maven
+$MavenVersion = '3.10.0'
+$ToolsDirectory = Join-Path $HOME 'tools'
+$MavenHome = Join-Path $ToolsDirectory "apache-maven-$MavenVersion"
+$MavenCommand = Join-Path $MavenHome 'bin\mvn.cmd'
+if (-not (Test-Path $MavenCommand)) {
+    $MavenZip = Join-Path $env:TEMP "apache-maven-$MavenVersion-bin.zip"
+    New-Item -ItemType Directory -Force -Path $ToolsDirectory | Out-Null
+    Invoke-WebRequest -Uri "https://dlcdn.apache.org/maven/maven-3/$MavenVersion/binaries/apache-maven-$MavenVersion-bin.zip" -OutFile $MavenZip
+    Expand-Archive -Path $MavenZip -DestinationPath $ToolsDirectory -Force
+}
+$env:MAVEN_HOME = $MavenHome
+$MavenBin = Join-Path $MavenHome 'bin'
+$env:Path = "$MavenBin;$env:JAVA_HOME\bin;$env:Path"
+[Environment]::SetEnvironmentVariable('MAVEN_HOME', $MavenHome, 'User')
+$UserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+$PathEntries = @($UserPath -split ';' | Where-Object { $_ })
+if ($PathEntries -notcontains $MavenBin) { $PathEntries += $MavenBin }
+[Environment]::SetEnvironmentVariable('Path', ($PathEntries -join ';'), 'User')
+mvn -version
 ```
 
-Install Docker Desktop for the container workflow:
+Install and start Docker Desktop:
 
 ```powershell
 winget install --exact --id Docker.DockerDesktop
+Start-Process "$env:ProgramFiles\Docker\Docker\Docker Desktop.exe"
 ```
 
-If Windows asks for permission, approve the installation. Restart PowerShell after the installs so the updated `PATH` is loaded. Start Docker Desktop from the Start menu and wait until it reports that Docker is running. If prompted, enable the WSL 2 backend and restart Windows.
+Install AWS CLI only for EC2 deployment:
 
-Confirm the installations in a new PowerShell window:
+```powershell
+winget install --exact --id Amazon.AWSCLI
+```
+
+Verify the prerequisites:
 
 ```powershell
 java -version
@@ -77,15 +129,9 @@ docker --version
 docker compose version
 ```
 
-Java and Maven are needed for the native run steps below. Docker Desktop alone is enough to build and run the app using Compose because the Dockerfile supplies Java and Maven inside the build image.
-
 ## 2. Run and test locally with Java
 
-Change to the project directory:
-
-```powershell
-Set-Location 'C:\Users\D E L L\Downloads\github-code\java-project'
-```
+Run the following commands from the `java-project` directory.
 
 Run the automated web application test:
 
@@ -127,11 +173,7 @@ java -jar .\target\taskboard.jar
 
 ## 3. Build and deploy with Docker Compose
 
-Change to the project directory if needed:
-
-```powershell
-Set-Location 'C:\Users\D E L L\Downloads\github-code\java-project'
-```
+Run these commands from the same `java-project` directory.
 
 Build the image and start the app in the background:
 
@@ -198,6 +240,24 @@ Remove-Item Env:APP_PORT
 
 ## 4. Common checks
 
-If Maven or Java is reported as an unknown command, open a new PowerShell window and retry the version checks in section 1. If Docker commands fail, start Docker Desktop and wait for its engine to finish starting. If the page does not load, inspect the app logs with `docker compose logs --follow app` and confirm the published port with `docker compose ps`.
+If Docker Desktop reports that virtualization was not detected, open PowerShell as Administrator and enable the Windows components Docker's WSL 2 engine needs:
+
+```powershell
+dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart
+dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
+bcdedit /set hypervisorlaunchtype auto
+Restart-Computer
+```
+
+After Windows restarts, open PowerShell and update WSL:
+
+```powershell
+wsl --update
+wsl --status
+```
+
+Start Docker Desktop, open **Settings > General**, enable **Use the WSL 2 based engine**, and select **Apply & restart**. If the administrator commands are blocked by your organization, ask IT to enable WSL and Virtual Machine Platform. Do not change BIOS virtualization if Windows already reports that firmware virtualization is enabled.
+
+If Maven or Java is reported as an unknown command, run the setup commands in section 1 and reopen PowerShell. If the page does not load after Docker starts, inspect the app logs with `docker compose logs --follow app` and confirm the published port with `docker compose ps`.
 
 Do not run `docker compose down --volumes` unless you intend to permanently delete the tasks saved in the Docker volume.

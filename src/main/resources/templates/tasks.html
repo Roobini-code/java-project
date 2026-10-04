@@ -68,7 +68,7 @@
                         <p class="task-description" th:if="${!#strings.isEmpty(task.description)}"
                            th:text="${task.description}">Task description</p>
                         <time class="task-date" th:datetime="${task.createdAt}"
-                              th:text="${#temporals.format(task.createdAt, 'MMM d, yyyy')}">Oct 1, 2026</time>
+                            th:text="${task.createdAtLabel}">Oct 1, 2026</time>
                     </div>
                     <div class="task-actions">
                         <form class="status-form" th:action="@{/tasks/{id}/status(id=${task.id})}" method="post">

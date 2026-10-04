@@ -1,21 +1,39 @@
 # Build, Test, and Deploy Taskboard to EC2
 
-This guide provisions an Amazon Linux 2023 EC2 instance from Windows PowerShell, restricts SSH and web access to your current public IP, copies this project to the instance, installs Docker Engine and the Docker Compose plugin, then runs the app. The app is served over HTTP on port 80 and stores its H2 database in a Docker named volume.
+This guide provisions an Amazon Linux 2023 EC2 instance from Windows PowerShell, restricts SSH and web access to your current public IP, builds and pushes the app image to Docker Hub, then pulls and runs that image on EC2. The app is served over HTTP on port 80 and stores its H2 database in a Docker named volume.
 
-Java and Maven are needed on your Windows machine to test the project locally. EC2 does not need a separately installed JDK or Maven because the Docker build image supplies them and the runtime image contains Java.
+Java and Maven are needed on your Windows machine to test the project locally. Docker Desktop builds the image using the project's multi-stage Dockerfile; EC2 only needs Docker Engine to pull and run the published image.
 
 > **Security and cost:** Taskboard has no login or user accounts. The steps below allow access only from your current public IP; do not expose it publicly with real or sensitive tasks. HTTP is not encrypted. Add authentication and HTTPS before making this a public service. EC2, EBS, and public IPv4 usage may incur AWS charges. Review pricing and terminate resources when finished.
+
+## Build-to-endpoint overview
+
+```mermaid
+flowchart LR
+    Developer[Developer PC] --> Test[mvn clean test]
+    Test --> Build[Build Docker image]
+    Build --> Push[Push image to Docker Hub]
+    Push --> Pull[EC2 pulls image]
+    Pull --> EC2[Amazon Linux EC2]
+    EC2 --> Run[Run Docker container]
+    Run --> Image[Taskboard image]
+    Image --> App[Spring Boot container on port 8080]
+    App --> Volume[(Persistent H2 Docker volume)]
+    App --> Map[Publish EC2 port 80 to container port 8080]
+    Map --> Firewall[Security group allows your IP]
+    Firewall --> Endpoint[Browser: http://EC2-public-IP]
+```
 
 ## Architecture and request flow
 
 ```mermaid
 flowchart LR
-    Developer[Windows developer PC] -->|Maven test and package| Source[Java source and Dockerfile]
-    Developer -->|tar archive and SCP over SSH| Instance[Amazon Linux EC2]
+    Developer[Windows developer PC] -->|Maven test and Docker build| Source[Java source and Dockerfile]
+    Developer -->|docker push| Registry[Docker Hub: roobinidevops/taskboard-java]
+    Registry -->|docker pull| Instance[Amazon Linux EC2]
     Internet[Browser from allowed IP] -->|HTTP port 80| SecurityGroup[EC2 security group]
     SecurityGroup --> Instance
-    Instance --> Compose[Docker Compose]
-    Compose --> App[Spring Boot and Thymeleaf container]
+    Instance --> App[Spring Boot and Thymeleaf container]
     App --> Repository[Spring Data JPA]
     Repository --> Database[(H2 database file)]
     Volume[(Docker volume taskboard-data)] --> Database
@@ -55,14 +73,12 @@ Restart PowerShell, start Docker Desktop, and check the tools:
 java -version
 mvn -version
 docker --version
-docker compose version
 aws --version
 ```
 
-Change to the project folder and run the automated test:
+From the `java-project` directory, run the automated test:
 
 ```powershell
-Set-Location 'C:\Users\D E L L\Downloads\github-code\java-project'
 mvn clean test
 ```
 
@@ -80,14 +96,48 @@ mvn spring-boot:run
 
 Open `http://localhost:8080`, create a task, and verify that it appears. Stop the app with `Ctrl+C`.
 
-You can also verify the Docker build locally:
+Run the Docker image locally before publishing it:
 
 ```powershell
-docker compose config
-docker compose build
+docker build -t roobinidevops/taskboard-java:1.0.0 .
+docker run --rm -d --name taskboard-test -p 127.0.0.1:18080:8080 roobinidevops/taskboard-java:1.0.0
+Invoke-WebRequest -Uri 'http://localhost:18080' -UseBasicParsing | Select-Object -ExpandProperty StatusCode
+docker stop taskboard-test
 ```
 
-## 2. Configure AWS CLI credentials
+The expected response code is `200`. Run these commands from the `java-project` directory.
+
+## 2. Build and publish the image to Docker Hub
+
+The Docker Hub repository is [roobinidevops/taskboard-java](https://hub.docker.com/repository/docker/roobinidevops/taskboard-java). Confirm that the repository exists and that its visibility is **Public** if EC2 should pull without authenticating. If it is private, the EC2 deployment steps below must log in with a Docker Hub access token before pulling.
+
+From the `java-project` directory, build a versioned image and a `latest` tag:
+
+```powershell
+docker build -t roobinidevops/taskboard-java:1.0.0 -t roobinidevops/taskboard-java:latest .
+```
+
+Create a Docker Hub access token with **Read & Write** permissions for this repository. A read-only token can pull images but cannot push them. Confirm the repository exists under the `roobinidevops` namespace and that this account is allowed to publish to it.
+
+If Docker is already logged in with an old or read-only token, remove the cached credentials first. Then sign in again with the `roobinidevops` username and the new token (enter the token when Docker prompts for a password; do not put it directly in the command):
+
+```powershell
+docker logout
+docker login --username roobinidevops
+```
+
+If prompted, paste the access token—not your Docker Hub account password.
+
+Push both tags to the repository:
+
+```powershell
+docker push roobinidevops/taskboard-java:1.0.0
+docker push roobinidevops/taskboard-java:latest
+```
+
+Verify that the tags appear on the [Docker Hub repository page](https://hub.docker.com/repository/docker/roobinidevops/taskboard-java). Do not put access tokens in this guide, source code, or shell command text.
+
+## 3. Configure AWS CLI credentials
 
 You need an AWS account and an IAM identity authorized to describe VPCs and AMIs, create a key pair and security group, authorize security-group rules, launch and describe EC2 instances, and terminate them. Prefer your organization's IAM Identity Center (SSO) role with least-privilege access.
 
@@ -104,14 +154,14 @@ aws sso login --profile taskboard-deploy
 aws sts get-caller-identity --profile taskboard-deploy
 ```
 
-If your organization does not use IAM Identity Center, configure an approved IAM profile instead. Do not put access keys in this guide, source code, or deployment archive:
+If your organization does not use IAM Identity Center, configure an approved IAM profile instead. Do not put access keys in this guide or source code:
 
 ```powershell
 aws configure --profile taskboard-deploy
 aws sts get-caller-identity --profile taskboard-deploy
 ```
 
-## 3. Set deployment variables
+## 4. Set deployment variables
 
 Run these commands in the same PowerShell window for all AWS and SSH steps. Choose a Region where you are allowed to create resources. The commands use a default VPC, Amazon Linux 2023, and an x86-64 `t3.small` instance.
 
@@ -121,8 +171,7 @@ $Region = 'us-east-1'
 $KeyName = 'taskboard-key'
 $KeyPath = Join-Path $HOME "$KeyName.pem"
 $GroupName = 'taskboard-web-sg'
-$ProjectPath = 'C:\Users\D E L L\Downloads\github-code\java-project'
-$ArchivePath = Join-Path $env:TEMP 'taskboard-deploy.tar.gz'
+$ProjectPath = (Get-Location).Path
 ```
 
 Check the current public IPv4 address. The security group will permit SSH and HTTP only from this address:
@@ -134,7 +183,7 @@ $MyIp
 
 If your internet provider changes your public IP, update the two inbound rules in the EC2 security group before reconnecting.
 
-## 4. Create the EC2 key pair and security group
+## 5. Create the EC2 key pair and security group
 
 Create a key pair and save its private key locally. AWS only returns the private key at creation time; keep this file private and backed up securely:
 
@@ -174,9 +223,9 @@ Allow HTTP on port 80 only from your current IP:
 aws ec2 authorize-security-group-ingress --group-id $SecurityGroupId --protocol tcp --port 80 --cidr "$MyIp/32" --profile $Profile --region $Region
 ```
 
-Do not add an inbound rule for port 8080. The app's container port is mapped to EC2 port 80 by Compose.
+Do not add an inbound rule for port 8080. Docker maps EC2 port 80 to the app's container port 8080.
 
-## 5. Launch the EC2 instance
+## 6. Launch the EC2 instance
 
 Look up the latest Amazon Linux 2023 x86-64 AMI in the selected Region:
 
@@ -185,7 +234,7 @@ $AmiId = aws ssm get-parameter --name '/aws/service/ami-amazon-linux-latest/al20
 $AmiId
 ```
 
-Launch one instance. `t3.small` has more memory than a micro instance for the first Docker image build; check current AWS pricing before running it:
+Launch one instance. Check current AWS pricing before running it:
 
 ```powershell
 $InstanceId = aws ec2 run-instances --image-id $AmiId --instance-type t3.small --key-name $KeyName --security-group-ids $SecurityGroupId --count 1 --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=taskboard-ec2}]' --query 'Instances[0].InstanceId' --output text --profile $Profile --region $Region
@@ -207,7 +256,7 @@ $PublicIp
 $PublicDns
 ```
 
-## 6. Connect to EC2 over SSH
+## 7. Connect to EC2 over SSH
 
 From the same PowerShell window on Windows, connect as the Amazon Linux default user:
 
@@ -217,13 +266,13 @@ ssh -i $KeyPath "ec2-user@$PublicIp"
 
 On the first connection, verify the host prompt and type `yes`. The commands in the next section run in the SSH terminal on EC2, not in local PowerShell.
 
-## 7. Install Docker Engine and Compose on EC2
+## 8. Install Docker Engine on EC2
 
 Update Amazon Linux and install Docker plus archive utilities:
 
 ```bash
 sudo dnf update -y
-sudo dnf install -y docker curl tar gzip
+sudo dnf install -y docker curl
 ```
 
 Enable Docker now and at boot:
@@ -232,76 +281,58 @@ Enable Docker now and at boot:
 sudo systemctl enable --now docker
 ```
 
-Install the Docker Compose v2 CLI plugin for this x86-64 EC2 instance:
-
-```bash
-sudo mkdir -p /usr/local/lib/docker/cli-plugins
-sudo curl -fSL https://github.com/docker/compose/releases/download/v2.39.4/docker-compose-linux-x86_64 -o /usr/local/lib/docker/cli-plugins/docker-compose
-sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
-```
-
-Verify both tools:
+Verify Docker:
 
 ```bash
 sudo docker --version
-sudo docker compose version
 ```
 
-## 8. Copy the app to EC2 and start it
+## 9. Pull the image and start the app on EC2
 
-In the EC2 SSH terminal, create a deployment folder and return to the local PowerShell window:
+Continue in the EC2 SSH terminal from the previous section. If the Docker Hub repository is public, pull the versioned image without logging in:
 
 ```bash
-mkdir -p ~/taskboard
-exit
+sudo docker pull roobinidevops/taskboard-java:1.0.0
 ```
 
-In local PowerShell, create a source archive. It excludes Git history, local database files, and Maven build output:
-
-```powershell
-tar -czf $ArchivePath --exclude=.git --exclude=target --exclude=data --exclude=.env -C $ProjectPath .
-```
-
-Copy the archive to the EC2 home directory:
-
-```powershell
-scp -i $KeyPath $ArchivePath "ec2-user@${PublicIp}:/home/ec2-user/taskboard-deploy.tar.gz"
-```
-
-Connect again:
-
-```powershell
-ssh -i $KeyPath "ec2-user@$PublicIp"
-```
-
-In the EC2 SSH terminal, extract the project and configure Compose to publish HTTP on port 80:
+If the repository is private, authenticate as the Docker Hub user with a Docker Hub access token. The token input is hidden; do not paste the token into the guide or source files:
 
 ```bash
-tar -xzf ~/taskboard-deploy.tar.gz -C ~/taskboard
-cd ~/taskboard
-printf 'APP_PORT=80\n' > .env
+read -rsp 'Docker Hub access token: ' DOCKERHUB_TOKEN
+echo
+printf '%s' "$DOCKERHUB_TOKEN" | sudo docker login --username roobinidevops --password-stdin
+unset DOCKERHUB_TOKEN
+sudo docker pull roobinidevops/taskboard-java:1.0.0
 ```
 
-Build the application image on EC2 and start the service:
+Create a named volume for persistent H2 database storage, then run the container. The volume survives container replacement and restart:
 
 ```bash
-sudo docker compose up --build --detach
+sudo docker volume create taskboard-data
+sudo docker run -d \
+  --name taskboard \
+  --restart unless-stopped \
+  -p 80:8080 \
+  -e PORT=8080 \
+  -e DATA_DIR=/data \
+  -v taskboard-data:/data \
+  roobinidevops/taskboard-java:1.0.0
 ```
 
-Check that the container is running and inspect the startup log:
+Check container status and startup logs:
 
 ```bash
-sudo docker compose ps
-sudo docker compose logs --tail=100 app
+sudo docker ps
+sudo docker logs --tail=100 taskboard
 ```
 
-Check the app locally on the instance:
+Check the app locally on the EC2 instance:
 
 ```bash
 curl -I http://localhost
 ```
 
-Back in local PowerShell, open the deployed app using its public IP:
+Back in local PowerShell, check the deployed app using its public IP:
 
 ```powershell
 Invoke-WebRequest -Uri "http://$PublicIp" -UseBasicParsing | Select-Object -ExpandProperty StatusCode
@@ -309,60 +340,62 @@ Invoke-WebRequest -Uri "http://$PublicIp" -UseBasicParsing | Select-Object -Expa
 
 The expected response code is `200`. Browse to `http://<EC2-public-IP>` and try creating and updating a task. Because inbound port 80 is restricted to your current IP, other networks cannot open the page.
 
-## 9. Update the deployment
+## 10. Update the deployed image
 
-After changing code, run tests locally:
+After changing code, run tests and build/push a new version from local PowerShell. Increment the version tag each time (for example, use `1.0.1` next):
 
 ```powershell
 Set-Location $ProjectPath
 mvn clean test
+docker build -t roobinidevops/taskboard-java:1.0.1 -t roobinidevops/taskboard-java:latest .
+docker push roobinidevops/taskboard-java:1.0.1
+docker push roobinidevops/taskboard-java:latest
 ```
 
-Create and copy a fresh archive from local PowerShell:
-
-```powershell
-tar -czf $ArchivePath --exclude=.git --exclude=target --exclude=data --exclude=.env -C $ProjectPath .
-scp -i $KeyPath $ArchivePath "ec2-user@${PublicIp}:/home/ec2-user/taskboard-deploy.tar.gz"
-```
-
-Reconnect to EC2:
+Reconnect to EC2 if needed:
 
 ```powershell
 ssh -i $KeyPath "ec2-user@$PublicIp"
 ```
 
-Run these next commands in the EC2 SSH terminal:
+Run the following on EC2 to pull the new image, replace the container, and retain the database volume:
 
 ```bash
-tar -xzf ~/taskboard-deploy.tar.gz -C ~/taskboard
-cd ~/taskboard
-sudo docker compose up --build --detach
-sudo docker compose ps
+sudo docker pull roobinidevops/taskboard-java:1.0.1
+sudo docker rm -f taskboard
+sudo docker run -d \
+  --name taskboard \
+  --restart unless-stopped \
+  -p 80:8080 \
+  -e PORT=8080 \
+  -e DATA_DIR=/data \
+  -v taskboard-data:/data \
+  roobinidevops/taskboard-java:1.0.1
+sudo docker ps
+sudo docker logs --tail=100 taskboard
 ```
 
-The named volume is preserved when the app is rebuilt, so task data remains. The `.env` file with `APP_PORT=80` is not part of the source archive and remains on the instance.
+The named volume is reused when the container is replaced, so task data remains. If the Docker Hub repository is private, authenticate on EC2 again if its saved registry credentials are unavailable.
 
-## 10. Stop the app and clean up AWS resources
+## 11. Stop the app and clean up AWS resources
 
-To stop the app but keep the container configuration and database volume, run on EC2:
+To stop the app but keep the container and database volume, run on EC2:
 
 ```bash
-cd ~/taskboard
-sudo docker compose down
+sudo docker stop taskboard
 ```
 
 To restart it later:
 
 ```bash
-cd ~/taskboard
-sudo docker compose up --detach
+sudo docker start taskboard
 ```
 
-To permanently remove the app's stored tasks from EC2, remove the named volume as well. Only run this if you intend to erase the data:
+To permanently remove the app and its stored tasks from EC2, remove the container and named volume. Only run these if you intend to erase the data:
 
 ```bash
-cd ~/taskboard
-sudo docker compose down --volumes
+sudo docker rm -f taskboard
+sudo docker volume rm taskboard-data
 ```
 
 To stop AWS instance charges, run in local PowerShell:
@@ -389,6 +422,8 @@ Remove-Item $KeyPath
 
 - `Permission denied (publickey)`: confirm the username is `ec2-user`, the key path is correct, and the instance was launched with this key pair.
 - SSH times out: confirm the instance is running, your current IP still matches the port 22 security-group rule, and the selected subnet has a public route.
-- The website times out: confirm the port 80 security-group rule contains your current IP, then run `sudo docker compose ps` and `sudo docker compose logs --tail=100 app` on EC2.
-- `docker compose` is not a command: verify the plugin exists at `/usr/local/lib/docker/cli-plugins/docker-compose`, is executable, and invoke it as `sudo docker compose`.
+- The website times out: confirm the port 80 security-group rule contains your current IP, then run `sudo docker ps` and `sudo docker logs --tail=100 taskboard` on EC2.
+- `pull access denied` or `manifest unknown`: confirm the repository is public or log in to Docker Hub on EC2, and check that the requested image tag exists.
+- `authentication required - access token has insufficient scopes` when pushing: create a Docker Hub access token with **Read & Write** permissions, run `docker logout`, sign in again as `roobinidevops` with that token, and verify the account has permission to publish to `roobinidevops/taskboard-java`.
+- `port is already allocated`: another process or container is using host port 80; inspect containers with `sudo docker ps` before changing the port mapping.
 - Public IP changed: retrieve the current address with `aws ec2 describe-instances` and update the `$PublicIp` variable and security-group ingress rules. A stopped and restarted instance may receive a different public IP unless you allocate an Elastic IP.
