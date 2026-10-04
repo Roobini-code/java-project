@@ -253,12 +253,17 @@ AWS credentials. Do not create IAM access keys.
 If this provider already exists in the AWS account, reuse it; do not create a
 duplicate.
 
-### 6.2 Create a least-privilege policy
+### 6.2 Create the role's permission policy
 
 Find your AWS account ID in the AWS Console account menu. Note the Region,
 account ID, and EC2 instance ID (format `i-...`). Replace the three
 placeholders in this policy before creating it under **IAM → Policies → Create
-policy → JSON**:
+policy → JSON**. This is a **permissions policy**: it says what the assumed
+role may do.
+
+Do not paste the trust policy from Step 6.3 into this editor. The trust policy
+defines who may assume the role and belongs under the role's **Trust
+relationships**, not in its permissions policy.
 
 ```json
 {
@@ -286,9 +291,10 @@ policy → JSON**:
 }
 ```
 
-Name the policy `TaskboardGitHubDeployPolicy`. For example, the instance
-details shown earlier use Region `us-east-2`; use the actual Region and
-instance ID shown in **your** EC2 console.
+Name the policy `TaskboardGitHubDeployPolicy`. For example, the screenshots
+from this setup show account `142643434331`, Region `us-east-2`, and instance
+`i-09f9a21c034a3947a`; confirm those values in your AWS Console before using
+them.
 
 ### 6.3 Create the GitHub Actions IAM role
 
@@ -303,11 +309,12 @@ instance ID shown in **your** EC2 console.
 6. If shown, set **GitHub repository** to `java-project` and **GitHub branch**
    to `main`. Do not leave these set to `*`; restricting the role to the app's
    main branch is important.
-7. Continue to the permissions step. If the wizard lets you attach
-   `TaskboardGitHubDeployPolicy`, attach it. If the wizard instead generates
-   its own trust relationship or requires a permission policy before role
-   creation, complete the role creation and then edit the role's trust
-   relationship and attach the policy as described below.
+7. Continue to the permissions step and attach the existing
+   `TaskboardGitHubDeployPolicy` created in Step 6.2. Do not choose **Create a
+   new policy** here and paste the trust policy JSON into it: this step is for
+   permissions, not trust. The Web identity settings above create the trust
+   relationship; review it under the role's **Trust relationships** after
+   creating the role.
 8. Verify that the role's trust relationship matches this policy, replacing
    `<ACCOUNT_ID>` with your 12-digit AWS account ID:
 
@@ -332,9 +339,8 @@ instance ID shown in **your** EC2 console.
    }
    ```
 
-9. Attach the customer-managed policy `TaskboardGitHubDeployPolicy` if you
-   have not already attached it, and name the role
-   `TaskboardGitHubActionsDeployRole`.
+9. Confirm the customer-managed policy `TaskboardGitHubDeployPolicy` is
+   attached, and name the role `TaskboardGitHubActionsDeployRole`.
 10. Open the new role's **Summary** and copy its **ARN**. It has the form
    `arn:aws:iam::<ACCOUNT_ID>:role/TaskboardGitHubActionsDeployRole`. Keep it
    for the GitHub repository variable in Step 8.
