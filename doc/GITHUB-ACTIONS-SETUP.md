@@ -3,6 +3,25 @@
 This checklist explains what the Taskboard GitHub Actions pipeline does, what
 you need to configure, and which repository or service to configure it in.
 
+## Do I need a GitHub PAT for Actions to clone this repository?
+
+No. The workflow uses `actions/checkout`, which checks out the application
+repository using the short-lived `GITHUB_TOKEN` that GitHub creates for each
+workflow run. You do not need to create or store a personal access token (PAT)
+for Actions to clone this public app repository.
+
+The app workflow calls a reusable workflow from
+`Roobini-code/ci-cd-pipelines`. That repository must be public, or its Actions
+settings must explicitly allow `java-project` to use the workflow. This
+repository-to-repository workflow access is configured in GitHub; it does not
+require putting your personal PAT in Actions secrets.
+
+The PAT you created to push `.github/workflows/taskboard.yml` from your
+computer is only for your local Git authentication. It is separate from
+Actions runtime authentication. The pipeline also does not need AWS access
+keys: its current EC2 deployment connects over SSH using the private key stored
+as a repository secret.
+
 ## What the pipeline does
 
 The application workflow is
@@ -99,25 +118,136 @@ authenticate on EC2 before deploying.
 
 ### 4. Prepare the EC2 instance and network
 
-The EC2 instance must:
+If you do not have an EC2 instance yet, create one in the AWS Console:
+
+1. Sign in to an AWS account you are authorized to use. Protect the account
+   with MFA, avoid using the root account for routine administration, and
+   select the AWS Region where you want the instance. EC2, EBS storage, public
+   IPv4 addresses, and data transfer may incur charges. Check current pricing
+   and billing alerts before launching.
+2. Open **EC2 → Instances → Launch instances** and name the instance
+   `taskboard-ec2`.
+3. Under **Application and OS Images**, select **Amazon Linux 2023 AMI**,
+   64-bit x86.
+4. Select an instance type such as `t3.small`. Confirm its price and
+   availability in your Region before proceeding.
+5. Under **Key pair (login)**, create a new RSA key pair, choose the `.pem`
+   private-key format, and download it. Store this file securely on your PC.
+   AWS will not let you download the private key again. Do not put the key in
+   Git, Docker Hub, or the pipeline repository.
+6. Under **Network settings**, create a security group. Add:
+   - **HTTP**, TCP port `80`, source restricted to your current public IP
+     (`<your-ip>/32`) for initial private testing. Use a broader HTTP source
+     only if the app is intentionally public; the app has no sign-in.
+   - **SSH**, TCP port `22`, source restricted to your current public IP
+     (`<your-ip>/32`) for manual administration. Do not use
+     `0.0.0.0/0` for SSH.
+   - Do not add a port `8080` rule; the container listens on `8080` internally
+     and the deployment maps it to EC2 port `80`.
+7. Ensure **Auto-assign public IP** is enabled. Keep the default outbound
+   security-group rule that permits the instance to reach Docker Hub over
+   HTTPS; the instance needs outbound network access to pull the image.
+8. Leave the instance IAM role unset for this current SSH-based workflow. It
+   pulls the public Docker Hub image and does not call AWS APIs from the
+   instance.
+9. Choose an EBS volume size (for example, `20 GiB` gp3), review the full
+   estimate, and launch the instance.
+10. Wait until **Instance state** is `Running` and both instance status checks
+    pass. Copy its **Public IPv4 DNS** or **Public IPv4 address**; this is the
+    value for `EC2_HOST`.
+
+Connect from your Windows PC using the key pair to install Docker. In
+PowerShell, substitute your downloaded key path and the instance public IP:
+
+```powershell
+ssh -i "$HOME\Downloads\taskboard-key.pem" "ec2-user@<EC2-PUBLIC-IP>"
+```
+
+On the first connection, verify that this is the instance you just launched
+and accept its host key. Then, in the EC2 SSH terminal, install and start
+Docker:
+
+```bash
+sudo dnf update -y
+sudo dnf install -y docker curl
+sudo systemctl enable --now docker
+sudo docker --version
+```
+
+Exit SSH after Docker is installed. Do not add `ec2-user` to the Docker group;
+the deployment uses `sudo docker`.
+
+#### Important: GitHub Actions must be able to reach SSH
+
+The current reusable workflow runs on GitHub-hosted `ubuntu-latest` runners and
+connects to `EC2_HOST` on SSH port `22`. The SSH rule limited to your home IP
+allows your PC to connect, but **does not allow GitHub's runner to deploy**.
+Standard GitHub-hosted runners do not have a single fixed outbound IP suitable
+for a permanent EC2 security-group allowlist.
+
+Before relying on automatic deployment, choose one of these approaches:
+
+1. Use a GitHub Actions runner option that provides a static outbound IP, then
+   configure the reusable workflow to use that runner and allow only its IP
+   (`/32`) on the EC2 security group's SSH rule. Changing the security group
+   alone is not enough; the current workflow uses `ubuntu-latest`. Check plan
+   requirements and pricing with GitHub.
+2. Change the reusable workflow to deploy through AWS Systems Manager (SSM)
+   with GitHub OIDC and least-privilege IAM permissions. This avoids opening
+   inbound SSH to the runner, but **is not the deployment method implemented
+   in the current workflow**; the workflow and setup guide must be updated
+   before using SSM.
+
+Do not solve this by allowing SSH from `0.0.0.0/0` or by copying broad,
+changing GitHub runner IP ranges into the security group. Until a safe runner
+network path is configured, PR verification and Docker build can run, but the
+post-merge EC2 deployment will fail to connect.
+
+For the current SSH workflow, the EC2 instance must:
 
 - Be reachable at the host set in `EC2_HOST`.
 - Accept SSH as `ec2-user` using the private key in `EC2_SSH_PRIVATE_KEY`.
 - Have Docker Engine and `curl` installed.
 - Allow `ec2-user` to run Docker commands with `sudo`.
-- Have inbound SSH access from the GitHub Actions runner.
-- Allow inbound HTTP on port 80 from the users who need to access Taskboard.
+- Allow inbound SSH only from the selected runner's static egress IP, once
+  that runner option is configured.
+- Allow inbound HTTP on port 80 from the people who need to access Taskboard.
 
-GitHub-hosted runner public IP addresses change. Do not assume a narrow,
-permanent EC2 SSH allowlist can be maintained for the default GitHub-hosted
-runner. For a tighter network policy, use a properly secured self-hosted runner
-with restricted egress, or replace SSH deployment with AWS Systems Manager
-using short-lived AWS credentials and least-privilege IAM permissions. Keep
-port 80 restricted to the intended users; the Taskboard app has no
-authentication.
+#### Make Docker Hub pullable by EC2
+
+The workflow logs in to Docker Hub on the GitHub runner to publish the image,
+but does not log in to Docker Hub on EC2. Set
+`roobinidevops/taskboard-java` to **Public** in Docker Hub so EC2 can pull the
+image without credentials. Do not make it private unless the EC2 deployment
+step is also changed to authenticate to Docker Hub.
 
 The deployment creates or reuses a Docker volume named `taskboard-data`. Do
 not remove this volume if task data must be preserved.
+
+#### Add the EC2 values as GitHub Actions secrets
+
+After the instance and Docker are ready, in the `java-project` GitHub
+repository, open **Settings → Secrets and variables → Actions** and create
+these **repository secrets**:
+
+| Secret | Value |
+| --- | --- |
+| `DOCKERHUB_USERNAME` | `roobinidevops` or the Docker Hub account with push access to the image repository. |
+| `DOCKERHUB_TOKEN` | Docker Hub access token with **Read & Write** permission. This is not a GitHub PAT. |
+| `EC2_HOST` | EC2 public DNS name or IPv4 address, without `http://`, `https://`, or a port. |
+| `EC2_SSH_PRIVATE_KEY` | Entire contents of the downloaded `.pem` private key. Keep this value secret. |
+| `EC2_KNOWN_HOSTS` | The EC2 SSH host-key entry verified for the exact hostname/IP in `EC2_HOST`. |
+
+For `EC2_KNOWN_HOSTS`, preserve strict host-key checking: verify the instance's
+SSH host key via a trusted connection or AWS/admin process, and store the
+matching `known_hosts` line. Do not disable host-key checking or trust an
+unverified key scan. If the EC2 instance is replaced and its host key changes,
+verify the new key and update both EC2-related secrets as needed.
+
+These are the only runtime secrets the current workflow expects. Do not add
+your GitHub PAT, AWS console password, AWS access key, or EC2 key to the
+pipeline repository or commit them to either Git repository. Actions secrets
+belong in **Settings → Secrets and variables → Actions** in `java-project`.
 
 ### 5. Enable safe merges and deployment
 
@@ -129,9 +259,12 @@ not remove this volume if task data must be preserved.
 4. Create a pull request targeting `main`.
 5. In the PR's **Checks** section, confirm the Taskboard workflow passes both
    Maven verification and Docker image build.
-6. Merge the PR. The push to `main` should trigger image publish, EC2 deploy,
+6. Before merging, make sure the runner-to-EC2 SSH path described above is
+   configured. If it is not configured, PR verification can still pass but
+   deployment after merge will fail.
+7. Merge the PR. The push to `main` should trigger image publish, EC2 deploy,
    HTTP health check, and then Git tag creation.
-7. Confirm the run succeeds under **Actions** in `java-project`; verify the
+8. Confirm the run succeeds under **Actions** in `java-project`; verify the
    versioned image in Docker Hub, the running container on EC2, and the new Git
    tag under **Releases/Tags** in GitHub.
 
