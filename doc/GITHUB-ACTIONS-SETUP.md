@@ -25,6 +25,41 @@ the H2 database survives container replacement.
 **Every push to `main` deploys.** Protect `main` and require reviewed pull
 requests before enabling this pipeline for production.
 
+### Pipeline flow
+
+```mermaid
+flowchart TD
+    PR["Pull request targeting main"] --> CALL["App workflow calls reusable workflow"]
+    PUSH["Push or merge to main"] --> CALL
+
+    CALL --> CHECKOUT["Checkout app with GitHub GITHUB_TOKEN"]
+    CHECKOUT --> TEST["Set up Java 21 and run mvn clean verify"]
+    TEST --> BUILD["Build Docker image without publishing"]
+    BUILD --> CONDITION{"Push to main and verification passed?"}
+
+    CONDITION -->|"No: pull request"| PRDONE["CI checks finish; no secrets, push, or deployment"]
+    CONDITION -->|"Yes"| VERSION["Create unique image version from Maven version and run number"]
+    VERSION --> LOGIN["Log in to Docker Hub using Actions secrets"]
+    LOGIN --> PUBLISH["Build and push versioned image and latest"]
+    PUBLISH --> SSH["SSH from GitHub runner to EC2"]
+    SSH --> PULL["EC2 pulls the versioned image"]
+    PULL --> RUN["Replace taskboard container; reuse taskboard-data volume"]
+    RUN --> HEALTH{"HTTP health check succeeds?"}
+    HEALTH -->|"Yes"| TAG["Create and push matching Git tag"]
+    HEALTH -->|"No"| ROLLBACK["Attempt to restore prior container; workflow fails"]
+    TAG --> DONE["Deployment complete"]
+
+    SECRETS["Docker Hub token, EC2 SSH key, host, verified host key"] -.-> LOGIN
+    SECRETS -.-> SSH
+    NETWORK["SSH needs a safe runner-to-EC2 network path; default GitHub-hosted runners lack a fixed IP"] -.-> SSH
+```
+
+Pull-request verification does not need deployment credentials. For a merge
+deployment, image publishing happens before the SSH deployment; the Git tag is
+created only after EC2 passes its health check. If the EC2 connection cannot be
+made, or deployment/health checking fails, the workflow stops without creating
+the tag.
+
 ## Do I need a GitHub PAT for Actions to clone the app?
 
 No. `actions/checkout` uses GitHub's automatically provided, short-lived
