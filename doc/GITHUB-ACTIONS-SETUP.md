@@ -110,8 +110,14 @@ In the AWS Console:
 
 7. Enable **Auto-assign public IP**. Keep outbound access enabled so the
    instance can download packages and pull a public image from Docker Hub.
-8. For storage, choose an EBS size suitable for your use (for example, 20 GiB
-   gp3). Check the monthly price before launching.
+8. In **Configure storage**, use the default root disk under **EBS volumes**,
+   or adjust its size (for example, 20 GiB gp3) if needed. EC2 needs an EBS
+   root volume for Amazon Linux; it is normally created and attached
+   automatically during launch. **Do not create an EFS file system for this
+   app.** EFS is a separate, network file system and this deployment does not
+   use or mount it. If you are looking at the EFS console and see only EFS,
+   return to **EC2 → Instances → Launch instances → Configure storage**.
+   Review the EBS monthly price before launching.
 9. No EC2 IAM role is needed for the current SSH deployment. The current
    workflow does not use AWS APIs on the instance.
 10. Review and launch. Wait for **Instance state: Running** and both instance
