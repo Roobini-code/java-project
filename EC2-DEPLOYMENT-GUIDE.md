@@ -137,6 +137,44 @@ docker push roobinidevops/taskboard-java:latest
 
 Verify that the tags appear on the [Docker Hub repository page](https://hub.docker.com/repository/docker/roobinidevops/taskboard-java). Do not put access tokens in this guide, source code, or shell command text.
 
+## GitHub Actions CI/CD (optional)
+
+The app repository calls the reusable workflow in
+[ci-cd-pipelines](https://github.com/Roobini-code/ci-cd-pipelines). Pull
+requests targeting `main` run Maven verification and build the Docker image
+without publishing or deploying. After a pull request is merged to `main`, the
+workflow publishes the image to Docker Hub, deploys it over SSH to EC2, checks
+that the app responds, and creates a Git tag in this repository.
+
+In the `java-project` GitHub repository, open **Settings → Secrets and variables
+→ Actions → New repository secret** and add:
+
+| Secret | Value |
+| --- | --- |
+| `DOCKERHUB_USERNAME` | Docker Hub username with permission to publish to `roobinidevops/taskboard-java` |
+| `DOCKERHUB_TOKEN` | Docker Hub access token with Read & Write permission |
+| `EC2_HOST` | Instance public DNS name or IP address, without `http://` |
+| `EC2_SSH_PRIVATE_KEY` | Contents of the private `.pem` key used for the EC2 instance |
+| `EC2_KNOWN_HOSTS` | Verified SSH host-key entry for the instance |
+
+To populate `EC2_KNOWN_HOSTS`, first connect from a trusted machine and verify
+the EC2 SSH host key. Copy the matching entry from that machine's
+`~/.ssh/known_hosts` into the secret; the hostname or IP in that entry must
+match `EC2_HOST`. The instance must have Docker installed, use the `ec2-user`
+account, and allow that user to run Docker with `sudo`.
+GitHub-hosted runner IP addresses change, so allow their SSH traffic as
+appropriate for your security requirements; use a self-hosted runner or AWS
+Systems Manager if you need a stable, restricted deployment path.
+
+On each successful deployment, the workflow uses the Maven version plus the
+GitHub Actions run number and attempt to create a unique Git tag, for example
+`v1.0.0-42.1`. It pushes the corresponding versioned Docker image and also
+updates `latest`. The app's existing `taskboard-data` Docker volume is retained.
+Fork pull requests do not receive repository secrets and only run the
+verification and image-build steps. The caller workflow needs
+`contents: write` permission to create tags; protect `main` and require merges
+through pull requests if deployment should only happen after a review.
+
 ## 3. Configure AWS CLI credentials
 
 You need an AWS account and an IAM identity authorized to describe VPCs and AMIs, create a key pair and security group, authorize security-group rules, launch and describe EC2 instances, and terminate them. Prefer your organization's IAM Identity Center (SSO) role with least-privilege access.

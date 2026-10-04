@@ -1,0 +1,28 @@
+name: Taskboard CI/CD
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: taskboard-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  taskboard:
+    uses: Roobini-code/ci-cd-pipelines/.github/workflows/taskboard-java.yml@main
+    permissions:
+      contents: write
+    secrets:
+      DOCKERHUB_USERNAME: ${{ github.event_name == 'push' && secrets.DOCKERHUB_USERNAME || '' }}
+      DOCKERHUB_TOKEN: ${{ github.event_name == 'push' && secrets.DOCKERHUB_TOKEN || '' }}
+      EC2_HOST: ${{ github.event_name == 'push' && secrets.EC2_HOST || '' }}
+      EC2_SSH_PRIVATE_KEY: ${{ github.event_name == 'push' && secrets.EC2_SSH_PRIVATE_KEY || '' }}
+      EC2_KNOWN_HOSTS: ${{ github.event_name == 'push' && secrets.EC2_KNOWN_HOSTS || '' }}
