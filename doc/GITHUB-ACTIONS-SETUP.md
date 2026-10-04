@@ -296,8 +296,20 @@ instance ID shown in **your** EC2 console.
 2. Select **Web identity**.
 3. Identity provider: `token.actions.githubusercontent.com`.
 4. Audience: `sts.amazonaws.com`.
-5. Create a custom trust policy (or edit the role's trust relationship after
-   creation) with your AWS account ID substituted below:
+5. If the wizard shows **GitHub organization**, enter `Roobini-code`. This is
+   the GitHub owner shown in the app URL
+   `github.com/Roobini-code/java-project`—not an AWS organization and not your
+   local computer username.
+6. If shown, set **GitHub repository** to `java-project` and **GitHub branch**
+   to `main`. Do not leave these set to `*`; restricting the role to the app's
+   main branch is important.
+7. Continue to the permissions step. If the wizard lets you attach
+   `TaskboardGitHubDeployPolicy`, attach it. If the wizard instead generates
+   its own trust relationship or requires a permission policy before role
+   creation, complete the role creation and then edit the role's trust
+   relationship and attach the policy as described below.
+8. Verify that the role's trust relationship matches this policy, replacing
+   `<ACCOUNT_ID>` with your 12-digit AWS account ID:
 
    ```json
    {
@@ -320,9 +332,10 @@ instance ID shown in **your** EC2 console.
    }
    ```
 
-6. Attach `TaskboardGitHubDeployPolicy` and name the role
+9. Attach the customer-managed policy `TaskboardGitHubDeployPolicy` if you
+   have not already attached it, and name the role
    `TaskboardGitHubActionsDeployRole`.
-7. Open the new role's **Summary** and copy its **ARN**. It has the form
+10. Open the new role's **Summary** and copy its **ARN**. It has the form
    `arn:aws:iam::<ACCOUNT_ID>:role/TaskboardGitHubActionsDeployRole`. Keep it
    for the GitHub repository variable in Step 8.
 
