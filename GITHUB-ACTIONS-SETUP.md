@@ -137,9 +137,42 @@ not remove this volume if task data must be preserved.
 
 ## Troubleshooting
 
+### Push rejected for a workflow file
+
+If `git push` reports:
+
+```text
+refusing to allow a Personal Access Token to create or update workflow
+`.github/workflows/taskboard.yml` without `workflow` scope
+```
+
+GitHub rejected the credential Git used because it does not have permission to
+create or update Actions workflow files. The commit remains in your local
+branch; grant the token the needed permission, replace the saved GitHub
+credential, and retry the push.
+
+- For a **classic personal access token**, enable the `workflow` scope. Also
+  retain the `repo` scope if you use the token to push to a private repository.
+- For a **fine-grained personal access token**, grant access to the
+  `java-project` repository and give it **Contents: Read and write** and
+  **Workflows: Read and write** repository permissions.
+
+If you authenticate with GitHub CLI, refresh its token with workflow scope:
+
+```powershell
+gh auth refresh --hostname github.com --scopes workflow
+```
+
+If Git uses a manually created PAT, replace the cached GitHub credential in
+**Windows Credential Manager → Windows Credentials**: remove the saved
+`git:https://github.com` credential, then push again and authenticate using
+the newly authorized token when prompted. Keep the token private; never put it
+in the command line, repository, or chat.
+
 | Symptom | Check |
 | --- | --- |
 | Reusable workflow cannot be found or called | Confirm the workflow file exists on the referenced branch, the repository owner/name and path in `uses:` are exact, and cross-repository Actions access permits the caller. |
+| Push rejected because a PAT lacks `workflow` scope | Authorize workflow updates on the token, replace the cached GitHub credential, then retry `git push origin feature/run-1`. |
 | Docker login or push fails with insufficient scopes | Create a new Docker Hub token with **Read & Write** permission and update `DOCKERHUB_TOKEN` in `java-project`. |
 | `Required Actions secret ... is not configured` | Check that all five secrets are set in the app repository with the exact names above. Secrets are unavailable to fork PRs by design. |
 | SSH timeout | Check `EC2_HOST`, instance status, security group SSH ingress, and whether the chosen runner can reach the instance. |
