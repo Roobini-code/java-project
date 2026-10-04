@@ -1,8 +1,8 @@
 # Taskboard GitHub Actions and EC2 setup
 
-Follow these steps in order: understand the workflow, prepare AWS/EC2, prepare
-Docker Hub, resolve runner-to-EC2 connectivity, add GitHub configuration and
-secrets last, then test a pull request and deployment.
+Follow these steps in order: prepare AWS/EC2, prepare Docker Hub, enable
+Systems Manager, configure GitHub OIDC in AWS, then add the GitHub repository
+variables and secret last.
 
 ## What the workflow does
 
@@ -15,7 +15,7 @@ at `.github/workflows/taskboard-java.yml`.
 | Event | What happens |
 | --- | --- |
 | Pull request targeting `main` | Checks out the app, runs `mvn clean verify`, and builds the Docker image. It does not publish or deploy. |
-| Push to `main` (including a merge) | Verifies and builds, publishes a versioned image and `latest` to Docker Hub, deploys the versioned image to EC2, checks the HTTP endpoint, and creates a Git tag. |
+| Push to `main` (including a merge) | Verifies and builds, publishes a versioned image and `latest` to Docker Hub, assumes an AWS role with GitHub OIDC, deploys the versioned image through Systems Manager, checks the HTTP endpoint, and creates a Git tag. |
 
 The image tag uses the Maven project version plus the GitHub run number and
 attempt, for example `1.0.0-42.1`; the corresponding Git tag is
@@ -41,24 +41,24 @@ flowchart TD
     CONDITION -->|"Yes"| VERSION["Create unique image version from Maven version and run number"]
     VERSION --> LOGIN["Log in to Docker Hub using Actions secrets"]
     LOGIN --> PUBLISH["Build and push versioned image and latest"]
-    PUBLISH --> SSH["SSH from GitHub runner to EC2"]
-    SSH --> PULL["EC2 pulls the versioned image"]
+    PUBLISH --> OIDC["GitHub exchanges OIDC token for short-lived AWS credentials"]
+    OIDC --> SSM["Send deployment command through AWS Systems Manager"]
+    SSM --> PULL["SSM-connected EC2 pulls the versioned image"]
     PULL --> RUN["Replace taskboard container; reuse taskboard-data volume"]
     RUN --> HEALTH{"HTTP health check succeeds?"}
     HEALTH -->|"Yes"| TAG["Create and push matching Git tag"]
     HEALTH -->|"No"| ROLLBACK["Attempt to restore prior container; workflow fails"]
     TAG --> DONE["Deployment complete"]
 
-    SECRETS["Docker Hub token, EC2 SSH key, host, verified host key"] -.-> LOGIN
-    SECRETS -.-> SSH
-    NETWORK["SSH needs a safe runner-to-EC2 network path; default GitHub-hosted runners lack a fixed IP"] -.-> SSH
+    SECRETS["Docker Hub token"] -.-> LOGIN
+    ROLE["Restricted AWS IAM role for this repo's main branch"] -.-> OIDC
+    INSTANCE["EC2 instance role: AmazonSSMManagedInstanceCore"] -.-> SSM
 ```
 
 Pull-request verification does not need deployment credentials. For a merge
-deployment, image publishing happens before the SSH deployment; the Git tag is
-created only after EC2 passes its health check. If the EC2 connection cannot be
-made, or deployment/health checking fails, the workflow stops without creating
-the tag.
+deployment, image publishing happens before the SSM deployment; the Git tag is
+created only after EC2 passes its health check. No inbound SSH from GitHub
+Actions is needed.
 
 ## Do I need a GitHub PAT for Actions to clone the app?
 
@@ -71,8 +71,9 @@ The reusable workflow repository must be public, or its Actions settings must
 allow `java-project` to use its workflows. This does not require adding your
 personal PAT to the app repository.
 
-The current deployment does not use AWS API credentials or AWS access keys.
-It connects to EC2 over SSH using the key stored in a GitHub Actions secret.
+The deployment uses GitHub OIDC to assume a restricted AWS IAM role and send
+the deployment command through Systems Manager. It does not use a long-lived
+AWS access key or an EC2 SSH key in GitHub Actions secrets.
 
 ## Step 1: Create and secure your AWS account
 
@@ -118,15 +119,18 @@ In the AWS Console:
    use or mount it. If you are looking at the EFS console and see only EFS,
    return to **EC2 → Instances → Launch instances → Configure storage**.
    Review the EBS monthly price before launching.
-9. No EC2 IAM role is needed for the current SSH deployment. The current
-   workflow does not use AWS APIs on the instance.
+9. No IAM role is required to launch the instance. You will create and attach
+   an EC2 Systems Manager role in Step 5.
 10. Review and launch. Wait for **Instance state: Running** and both instance
     status checks to pass. Copy the instance's **Public IPv4 DNS** or **Public
-    IPv4 address** and keep it for the later `EC2_HOST` secret.
+    IPv4 address** and note the instance ID (`i-...`) and Region. The instance
+    ID and Region will be repository variables in Step 8; the public IP is for
+    optional manual SSH and browser access only, not Actions deployment.
 
 If you stop and start the instance, its public IP and DNS name may change.
-Update the GitHub secret if they change. An Elastic IP can preserve the
-address, but may incur charges.
+Update any browser bookmarks or manual SSH command if they change. An Elastic
+IP can preserve the address, but may incur charges. The GitHub Actions SSM
+deployment uses the EC2 instance ID, not its public IP.
 
 ## Step 3: Install and verify Docker on EC2
 
@@ -138,18 +142,26 @@ ssh -i "$HOME\Downloads\taskboard-key.pem" "ec2-user@<EC2-PUBLIC-IP>"
 ```
 
 On first connection, verify that the host is your newly launched instance
-before accepting its SSH host key. In the EC2 terminal, install Docker:
+before accepting its SSH host key. In the EC2 terminal, install Docker and
+`curl`:
 
 ```bash
 sudo dnf update -y
 sudo dnf install -y docker curl
 sudo systemctl enable --now docker
+command -v docker
 sudo docker --version
+sudo systemctl is-active docker
 ```
 
+Both `command -v docker` and `sudo docker --version` should confirm Docker is
+installed, and `sudo systemctl is-active docker` should print `active`. If
+installation reports an error, resolve that before continuing. These commands
+are for the Amazon Linux EC2 SSH terminal, not local Windows PowerShell.
+
 The workflow uses `sudo docker`, so do not add `ec2-user` to the Docker group.
-Keep the SSH terminal available until you have verified the key and host
-information needed in Step 6.
+Keep the SSH terminal available for Step 5, where you will enable the Systems
+Manager agent and verify the instance is managed by AWS.
 
 ## Step 4: Prepare Docker Hub
 
@@ -161,39 +173,164 @@ information needed in Step 6.
    them. A private repository will therefore fail during deployment unless
    the workflow is extended to authenticate on EC2.
 3. Create a Docker Hub access token with **Read & Write** permission. Save it
-   in a password manager until Step 6. Do not use your Docker Hub account
+   in a password manager until Step 8. Do not use your Docker Hub account
    password or paste the token into a command.
 
-## Step 5: Resolve GitHub-runner-to-EC2 connectivity before deployment
+## Step 5: Enable AWS Systems Manager on EC2
 
-This is a required networking decision. The current reusable workflow uses a
-GitHub-hosted `ubuntu-latest` runner and connects to EC2 on SSH port 22. Your
-EC2 rule restricted to your home IP lets **your PC** connect; it does **not**
-let the GitHub-hosted runner connect. Standard GitHub-hosted runners do not
-have one fixed outbound IP that can safely be entered as a permanent `/32`
-security-group rule.
+The deployment uses Systems Manager (SSM), not SSH. GitHub Actions sends a
+command through AWS, and the SSM agent on EC2 receives it over an outbound
+HTTPS connection. This avoids opening SSH to GitHub-hosted runners.
 
-Choose and implement one deployment route before expecting a post-merge
-deployment to work:
+### 5.1 Give the EC2 instance its SSM role
 
-1. **Runner with static outbound IP:** use a GitHub runner offering with a
-   static egress IP. Update the reusable workflow's deployment job to run on
-   that runner, then allow only its static IP (`/32`) for SSH in the EC2
-   security group. Changing the security group without changing the workflow's
-   runner does not solve this.
-2. **AWS Systems Manager (recommended when available):** update the reusable
-   workflow to deploy through SSM using GitHub OIDC and a least-privilege IAM
-   role. Configure the EC2 instance as an SSM managed node. This avoids
-   inbound SSH from GitHub, but it is **not implemented in the current
-   workflow** and requires code and AWS configuration changes.
+1. In the AWS Console, open **IAM → Roles → Create role**.
+2. Select **AWS service** as the trusted entity and **EC2** as the use case.
+3. Attach the AWS-managed policy `AmazonSSMManagedInstanceCore`.
+4. Name the role `TaskboardEC2SSMRole`, review, and create it.
+5. Open **EC2 → Instances**, select `taskboard-ec2`, then choose **Actions →
+   Security → Modify IAM role**.
+6. Attach `TaskboardEC2SSMRole` and save. This is an instance profile for the
+   EC2 machine; it is separate from the GitHub Actions role configured below.
 
-Do not open SSH to `0.0.0.0/0` or add broad, changing GitHub runner IP ranges
-to the security group. Until a supported network route is configured, pull
-request tests can pass but the deploy job will fail to connect. You can still
-finish the remaining setup and run PR CI while deciding on the deployment
-route.
+### 5.2 Ensure the SSM agent is running
 
-## Step 6: Configure the GitHub repositories
+Amazon Linux 2023 normally includes the SSM agent. In the EC2 SSH terminal,
+run:
+
+```bash
+sudo systemctl enable --now amazon-ssm-agent
+sudo systemctl is-active amazon-ssm-agent
+```
+
+The second command should print `active`. If systemd says the unit is missing,
+install the Amazon Linux package and retry:
+
+```bash
+sudo dnf install -y amazon-ssm-agent
+sudo systemctl enable --now amazon-ssm-agent
+```
+
+In AWS, open **Systems Manager → Fleet Manager** (or **Managed nodes**) in
+the same Region as the EC2 instance. Wait until this instance appears as
+online/connected. If it does not appear, confirm the instance role is attached
+and its security group permits outbound HTTPS (TCP 443). The instance needs
+outbound access to the regional SSM service endpoints; with the public subnet
+Internet Gateway route and default outbound rule, it can use its internet
+connection.
+
+### 5.3 Security-group rules for SSM deployment
+
+GitHub Actions will not SSH to EC2. Do not add a GitHub runner SSH rule and do
+not set SSH source to `0.0.0.0/0`.
+
+- Keep SSH TCP `22` restricted to **My IP** only if you want to administer the
+  machine manually from your PC. You may remove the SSH inbound rule after
+  confirming SSM works, if you no longer need direct SSH.
+- Keep HTTP TCP `80` restricted to your public IP (`/32`) for private app
+  testing. Only widen HTTP access if you intend to make this unauthenticated
+  app public.
+- Keep outbound HTTPS (TCP `443`) enabled so the SSM agent can reach AWS and
+  EC2 can pull the public Docker image.
+
+No fixed GitHub runner IP is required. Your earlier `github.com:22` test
+doesn’t affect this SSM path.
+
+## Step 6: Create the GitHub OIDC role in AWS
+
+This is a separate IAM role for GitHub Actions. It allows only the
+`Roobini-code/java-project` repository's `main` branch to request short-lived
+AWS credentials. Do not create IAM access keys.
+
+### 6.1 Create the GitHub OIDC identity provider (once per AWS account)
+
+1. Open **IAM → Identity providers → Add provider**.
+2. Provider type: **OpenID Connect**.
+3. Provider URL: `https://token.actions.githubusercontent.com`.
+4. Audience: `sts.amazonaws.com`.
+5. Add/create the provider.
+
+If this provider already exists in the AWS account, reuse it; do not create a
+duplicate.
+
+### 6.2 Create a least-privilege policy
+
+Find your AWS account ID in the AWS Console account menu. Note the Region,
+account ID, and EC2 instance ID (format `i-...`). Replace the three
+placeholders in this policy before creating it under **IAM → Policies → Create
+policy → JSON**:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "SendTaskboardDeploymentOnlyToItsInstance",
+      "Effect": "Allow",
+      "Action": "ssm:SendCommand",
+      "Resource": [
+        "arn:aws:ssm:<REGION>::document/AWS-RunShellScript",
+        "arn:aws:ec2:<REGION>:<ACCOUNT_ID>:instance/<INSTANCE_ID>"
+      ]
+    },
+    {
+      "Sid": "ReadAndCancelDeploymentCommand",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetCommandInvocation",
+        "ssm:CancelCommand"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+Name the policy `TaskboardGitHubDeployPolicy`. For example, the instance
+details shown earlier use Region `us-east-2`; use the actual Region and
+instance ID shown in **your** EC2 console.
+
+### 6.3 Create the GitHub Actions IAM role
+
+1. Open **IAM → Roles → Create role**.
+2. Select **Web identity**.
+3. Identity provider: `token.actions.githubusercontent.com`.
+4. Audience: `sts.amazonaws.com`.
+5. Create a custom trust policy (or edit the role's trust relationship after
+   creation) with your AWS account ID substituted below:
+
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Principal": {
+           "Federated": "arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com"
+         },
+         "Action": "sts:AssumeRoleWithWebIdentity",
+         "Condition": {
+           "StringEquals": {
+             "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+             "token.actions.githubusercontent.com:sub": "repo:Roobini-code/java-project:ref:refs/heads/main"
+           }
+         }
+       }
+     ]
+   }
+   ```
+
+6. Attach `TaskboardGitHubDeployPolicy` and name the role
+   `TaskboardGitHubActionsDeployRole`.
+7. Open the new role's **Summary** and copy its **ARN**. It has the form
+   `arn:aws:iam::<ACCOUNT_ID>:role/TaskboardGitHubActionsDeployRole`. Keep it
+   for the GitHub repository variable in Step 8.
+
+The trust policy restricts assumption to the app repository's `main` branch.
+The deployment job also requests GitHub's `id-token: write` permission; this
+permission issues a short-lived OIDC token, not a stored AWS key.
+
+## Step 7: Configure the GitHub repositories
 
 In `java-project`:
 
@@ -213,61 +350,45 @@ In `ci-cd-pipelines`:
 3. The app currently references the reusable workflow at `@main`. For
    production, pin this reference to a reviewed version tag or commit SHA.
 
-## Step 7: Create GitHub Actions secrets (do this last)
+## Step 8: Add GitHub repository variables and secrets
 
-After EC2, Docker Hub, and GitHub repository access/permissions are ready, add
-the secrets in the **`Roobini-code/java-project` app repository**:
+In the **`Roobini-code/java-project` app repository**, open
+**Settings → Secrets and variables → Actions → Variables**. Create these
+repository variables (they are identifiers, not credentials):
 
-1. Open **Settings → Secrets and variables → Actions**.
-2. Select **New repository secret**.
-3. Add these five secrets exactly as named:
+| Variable name | Value |
+| --- | --- |
+| `AWS_REGION` | Region containing EC2, for example `us-east-2`. |
+| `EC2_INSTANCE_ID` | The target instance ID, format `i-...`. |
+| `AWS_ROLE_ARN` | ARN copied from `TaskboardGitHubActionsDeployRole` in Step 6. |
 
-   | Secret name | Value |
-   | --- | --- |
-   | `DOCKERHUB_USERNAME` | Docker Hub username with permission to push the image; currently `roobinidevops`. |
-   | `DOCKERHUB_TOKEN` | The Docker Hub **Read & Write** token created in Step 4. This is not a GitHub PAT. |
-   | `EC2_HOST` | The EC2 **Public IPv4 DNS** or **Public IPv4 address** from Step 2. Do not include a scheme or port. |
-   | `EC2_SSH_PRIVATE_KEY` | The complete contents of the downloaded `.pem` file from Step 2. Keep it secret. |
-   | `EC2_KNOWN_HOSTS` | A verified SSH host-key line for the exact host saved in `EC2_HOST`. |
+Then select **Secrets → New repository secret** and add the Docker Hub
+credentials:
 
-4. For `EC2_KNOWN_HOSTS`, use the host key verified during your trusted first
-   SSH connection in Step 3. Compare the SSH fingerprint with one obtained
-   through a trusted AWS/admin channel; do not treat blindly accepting the
-   first SSH prompt as verification. On Windows, after the verified connection,
-   inspect the known-hosts entry with:
+| Secret name | Value |
+| --- | --- |
+| `DOCKERHUB_USERNAME` | Docker Hub username with permission to push the image; currently `roobinidevops`. |
+| `DOCKERHUB_TOKEN` | The Docker Hub **Read & Write** token created in Step 4. This is not a GitHub PAT. |
 
-   ```powershell
-   ssh-keygen -F "<EC2-PUBLIC-IP>" -f "$HOME\.ssh\known_hosts"
-   ```
+Create all three variables and both secrets in `java-project`; do not add them
+to `ci-cd-pipelines`. No EC2 IP, SSH private key, host key, AWS access key, or
+AWS console password is stored in GitHub Actions for this SSM deployment. The
+Docker Hub repository must be **Public** so EC2 can pull the published image
+without Docker Hub credentials.
 
-   If `EC2_HOST` is the public DNS name, search using that name instead of the
-   IP. Copy the complete matching line (hostname, key type, and key) into the
-   secret. The hostname at the beginning must exactly match `EC2_HOST`. If
-   there is no matching entry or you cannot verify its fingerprint, do not
-   disable strict host-key checking; verify the key through a trusted
-   AWS/admin process first.
-5. For `EC2_SSH_PRIVATE_KEY`, open the downloaded `.pem` file locally and copy
-   its entire contents, including the `BEGIN` and `END` lines and all
-   intervening lines. Paste those contents into the secret value without
-   trimming or reformatting the newlines. Do not paste the private key into
-   chat, a terminal command, or a repository.
-6. Store secrets only in **java-project → Settings → Secrets and variables →
-   Actions**. Do not put them in `ci-cd-pipelines`, workflow YAML, source code,
-   or documentation. Never add the GitHub PAT, AWS console password, or AWS
-   access keys as workflow secrets for this SSH-based workflow.
+If you added `EC2_HOST`, `EC2_SSH_PRIVATE_KEY`, or `EC2_KNOWN_HOSTS` while
+following an earlier SSH-based version of this guide, remove those unused
+secrets after switching the workflow to SSM.
 
-GitHub masks Actions secrets in logs and does not show their saved values
-later. Keep the original EC2 private key and Docker token securely so you can
-replace a secret if necessary.
-
-## Step 8: Run the pipeline and verify it
+## Step 9: Run the pipeline and verify it
 
 1. Push the app workflow and guide to a feature branch and create a PR
    targeting `main`.
 2. Open the PR's **Checks** tab. Confirm both Maven verification and the
    Docker image build pass. PRs do not publish images or deploy.
-3. Do not merge until you have resolved Step 5's runner-to-EC2 connectivity
-   requirement if you expect deployment to succeed.
+3. Before merging, confirm the EC2 instance appears online in Systems Manager
+   and the AWS role, policy, repository variables, and Docker Hub secret are
+   configured.
 4. Merge the PR. A push to `main` should run verification again, publish the
    versioned image and `latest`, deploy the versioned image, check the app over
    HTTP, and create a Git tag.
@@ -282,9 +403,9 @@ replace a secret if necessary.
 | --- | --- |
 | Actions cannot find/call the reusable workflow | Confirm the workflow path and branch, repository name, and cross-repository Actions access. |
 | Docker push says token has insufficient scopes | Replace `DOCKERHUB_TOKEN` with a Docker Hub token having Read & Write permission. |
-| SSH timeout after merge | The GitHub runner likely cannot reach EC2. Recheck Step 5; allowing only your home IP is not enough for a GitHub-hosted runner. |
-| SSH host-key verification fails | Verify the instance key and update `EC2_KNOWN_HOSTS`; do not disable host-key checking. |
-| `Permission denied (publickey)` | Confirm the private key is complete and belongs to the EC2 key pair, and that the SSH user is `ec2-user`. |
+| SSM says the instance is not online or is not a managed node | Confirm `TaskboardEC2SSMRole` with `AmazonSSMManagedInstanceCore` is attached, the agent is active, and outbound TCP 443 can reach SSM endpoints. |
+| AWS OIDC role assumption fails | Check the role ARN variable, `id-token: write` permission, OIDC provider audience, and exact repo/branch in the IAM trust policy. |
+| `ssm:SendCommand` access denied | Confirm `TaskboardGitHubDeployPolicy` has the correct Region, account ID, instance ID, and AWS-RunShellScript document ARN. |
 | Docker pull denied on EC2 | Confirm the Docker Hub image repository is Public. The current deploy workflow does not log in to Docker Hub on EC2. |
 | Container is unhealthy | On EC2, run `sudo docker ps` and `sudo docker logs --tail=100 taskboard`. The workflow attempts to restore the prior image after a failed health check. |
 | Push of `.github/workflows/taskboard.yml` rejected | This is your local Git credential, not Actions. A classic PAT needs `workflow` (and `repo` for private repos); a fine-grained PAT needs `Contents: Read and write` and `Workflows: Read and write`. Replace the cached Git credential and push again. |
