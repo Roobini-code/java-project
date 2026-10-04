@@ -117,11 +117,16 @@ From the `java-project` directory, build a versioned image and a `latest` tag:
 docker build -t roobinidevops/taskboard-java:1.0.0 -t roobinidevops/taskboard-java:latest .
 ```
 
-Sign in to Docker Hub. Use your Docker Hub username and, when prompted, a Docker Hub access token rather than your account password:
+Create a Docker Hub access token with **Read & Write** permissions for this repository. A read-only token can pull images but cannot push them. Confirm the repository exists under the `roobinidevops` namespace and that this account is allowed to publish to it.
+
+If Docker is already logged in with an old or read-only token, remove the cached credentials first. Then sign in again with the `roobinidevops` username and the new token (enter the token when Docker prompts for a password; do not put it directly in the command):
 
 ```powershell
+docker logout
 docker login --username roobinidevops
 ```
+
+If prompted, paste the access token—not your Docker Hub account password.
 
 Push both tags to the repository:
 
@@ -419,5 +424,6 @@ Remove-Item $KeyPath
 - SSH times out: confirm the instance is running, your current IP still matches the port 22 security-group rule, and the selected subnet has a public route.
 - The website times out: confirm the port 80 security-group rule contains your current IP, then run `sudo docker ps` and `sudo docker logs --tail=100 taskboard` on EC2.
 - `pull access denied` or `manifest unknown`: confirm the repository is public or log in to Docker Hub on EC2, and check that the requested image tag exists.
+- `authentication required - access token has insufficient scopes` when pushing: create a Docker Hub access token with **Read & Write** permissions, run `docker logout`, sign in again as `roobinidevops` with that token, and verify the account has permission to publish to `roobinidevops/taskboard-java`.
 - `port is already allocated`: another process or container is using host port 80; inspect containers with `sudo docker ps` before changing the port mapping.
 - Public IP changed: retrieve the current address with `aws ec2 describe-instances` and update the `$PublicIp` variable and security-group ingress rules. A stopped and restarted instance may receive a different public IP unless you allocate an Elastic IP.
