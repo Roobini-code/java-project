@@ -22,3 +22,5 @@ docker compose up --build --detach
 Then open <http://localhost:8080>. Compose stores application data in a named volume so it persists when the container stops.
 
 See [LOCAL-AND-DOCKER-GUIDE.md](LOCAL-AND-DOCKER-GUIDE.md) for Windows installation steps, complete local commands, deployment commands, and data persistence notes. For AWS provisioning, SSH access, and EC2 deployment, see [EC2-DEPLOYMENT-GUIDE.md](EC2-DEPLOYMENT-GUIDE.md).
+
+For GitHub Actions setup, required repository secrets, and CI/CD deployment steps, see [GITHUB-ACTIONS-SETUP.md](GITHUB-ACTIONS-SETUP.md).
