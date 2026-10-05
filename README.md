@@ -23,4 +23,4 @@ Then open <http://localhost:8080>. Compose stores application data in a named vo
 
 See [LOCAL-AND-DOCKER-GUIDE.md](LOCAL-AND-DOCKER-GUIDE.md) for Windows installation steps, complete local commands, deployment commands, and data persistence notes. For AWS provisioning, SSH access, and EC2 deployment, see [EC2-DEPLOYMENT-GUIDE.md](EC2-DEPLOYMENT-GUIDE.md).
 
-For GitHub Actions setup, required repository secrets, and CI/CD deployment steps, see [GITHUB-ACTIONS-SETUP.md](GITHUB-ACTIONS-SETUP.md).
+For the step-by-step GitHub Actions, AWS EC2, Docker Hub, and repository-secrets setup, see [GITHUB-ACTIONS-SETUP.md](doc/GITHUB-ACTIONS-SETUP.md).
