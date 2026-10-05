@@ -2,6 +2,7 @@
 
 A small Java 21 / Spring Boot task tracker with a responsive Thymeleaf frontend and persistent H2 storage. Create tasks, update their status, and remove completed or unwanted tasks.
 
+
 ## Quick start
 
 Run directly with Java 21 and Maven:
