@@ -14,8 +14,8 @@ at `.github/workflows/taskboard-java.yml`.
 
 | Event | What happens |
 | --- | --- |
-| Pull request targeting `main` | Checks out the app, runs `mvn clean verify`, and builds the Docker image. It does not publish or deploy. |
-| Push to `main` (including a merge) | Verifies and builds, publishes a versioned image and `latest` to Docker Hub, assumes an AWS role with GitHub OIDC, deploys the versioned image through Systems Manager, checks the HTTP endpoint, and creates a Git tag. |
+| Pull request targeting `main` | Runs the **CI** job only. It does not publish or deploy. |
+| Push to `main` (including a merge) | Runs **CI**, then **CD**: publishes a versioned image and `latest` to Docker Hub, assumes an AWS role through GitHub OIDC, deploys through Systems Manager, checks the HTTP endpoint, and creates a Git tag. |
 
 The image tag uses the Maven project version plus the GitHub run number and
 attempt, for example `1.0.0-42.1`; the corresponding Git tag is
